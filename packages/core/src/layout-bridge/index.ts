@@ -79,3 +79,13 @@ export {
   buildFootnoteContentMap,
   calculateFootnoteReservedHeights,
 } from './footnoteLayout';
+
+// Body-scoped PM-position DOM lookups. Centralizes the `.layout-page-content`
+// prefix so call sites can't accidentally match HF runs whose PM positions
+// collide with body positions (HF parses to a separate PM document).
+export {
+  findBodyPmSpans,
+  findBodyEmptyRuns,
+  findBodyPmAnchors,
+  findBodyPmAnchor,
+} from './findBodyPmSpans';

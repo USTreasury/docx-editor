@@ -14,6 +14,7 @@
 import { useCallback, useRef } from 'react';
 import { TextSelection } from 'prosemirror-state';
 import type { EditorView } from 'prosemirror-view';
+import { findBodyPmSpans } from '@eigenpal/docx-core/layout-bridge';
 import { findVerticalScrollParent } from './findVerticalScrollParent';
 
 /** Only match lines inside page body content, skipping header/footer lines. */
@@ -52,9 +53,8 @@ export function useVisualLineNavigation({ pagesContainerRef }: VisualLineNavigat
     (pmPos: number): number | null => {
       if (!pagesContainerRef.current) return null;
 
-      const spans = pagesContainerRef.current.querySelectorAll('span[data-pm-start][data-pm-end]');
-      for (const span of Array.from(spans)) {
-        const spanEl = span as HTMLElement;
+      const spans = findBodyPmSpans(pagesContainerRef.current);
+      for (const spanEl of spans) {
         const pmStart = Number(spanEl.dataset.pmStart);
         const pmEnd = Number(spanEl.dataset.pmEnd);
 
@@ -65,8 +65,8 @@ export function useVisualLineNavigation({ pagesContainerRef }: VisualLineNavigat
           continue;
         }
 
-        if (pmPos >= pmStart && pmPos <= pmEnd && span.firstChild?.nodeType === Node.TEXT_NODE) {
-          const textNode = span.firstChild as Text;
+        if (pmPos >= pmStart && pmPos <= pmEnd && spanEl.firstChild?.nodeType === Node.TEXT_NODE) {
+          const textNode = spanEl.firstChild as Text;
           const charIndex = Math.min(pmPos - pmStart, textNode.length);
           const ownerDoc = spanEl.ownerDocument;
           if (!ownerDoc) continue;

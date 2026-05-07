@@ -85,6 +85,12 @@ import { hitTestFragment, hitTestTableCell, getPageTop } from '@eigenpal/docx-co
 import { clickToPosition } from '@eigenpal/docx-core/layout-bridge';
 import { clickToPositionDom } from '@eigenpal/docx-core/layout-bridge';
 import {
+  findBodyEmptyRuns,
+  findBodyPmAnchor,
+  findBodyPmAnchors,
+  findBodyPmSpans,
+} from '@eigenpal/docx-core/layout-bridge';
+import {
   selectionToRects,
   getCaretPosition,
   type SelectionRect,
@@ -180,12 +186,13 @@ function runAfterPaint(fn: () => void, signal: AbortSignal): void {
 }
 
 /**
- * Largest painted `[data-pm-start]` value ≤ `pmPos`. Used to anchor scroll restore
- * when `renderPages` rebuilds the DOM.
+ * Largest painted body `[data-pm-start]` value ≤ `pmPos`. Used to anchor scroll
+ * restore when `renderPages` rebuilds the DOM. Header/footer anchors are skipped
+ * because their PM positions live in a separate document and would mis-resolve.
  */
 function findPaintedPmStartAtOrBefore(pages: HTMLElement, pmPos: number): number | null {
   let best: number | null = null;
-  const list = pages.querySelectorAll<HTMLElement>('[data-pm-start]');
+  const list = findBodyPmAnchors(pages);
   for (let i = 0; i < list.length; i++) {
     const raw = list[i].dataset.pmStart;
     if (raw == null) continue;
@@ -1843,9 +1850,7 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
               const head = state.selection.head;
               domAnchorPmStart = findPaintedPmStartAtOrBefore(pagesEl, head);
               if (domAnchorPmStart != null) {
-                const anchorEl = pagesEl.querySelector<HTMLElement>(
-                  `[data-pm-start="${domAnchorPmStart}"]`
-                );
+                const anchorEl = findBodyPmAnchor(pagesEl, domAnchorPmStart);
                 if (anchorEl) {
                   const ar = anchorEl.getBoundingClientRect();
                   const sr = scrollParent.getBoundingClientRect();
@@ -2030,7 +2035,7 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
       const applyScrollRestore = () => {
         if (applyIncrementalSnapshot()) return;
         if (renderKind !== 'incremental' && domAnchorPmStart != null) {
-          const el2 = pagesEl.querySelector<HTMLElement>(`[data-pm-start="${domAnchorPmStart}"]`);
+          const el2 = findBodyPmAnchor(pagesEl, domAnchorPmStart);
           if (el2) {
             const sr = scrollParent.getBoundingClientRect();
             const newOffset = el2.getBoundingClientRect().top - sr.top;
@@ -2115,15 +2120,9 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
 
         const overlayRect = overlay.getBoundingClientRect();
 
-        // Find spans with PM position data. Scope to `.layout-page-content`
-        // so we don't match HF spans whose `data-pm-start` collides with
-        // body positions (HF content is parsed via a separate PM doc).
-        const spans = pagesContainerRef.current.querySelectorAll(
-          '.layout-page-content span[data-pm-start][data-pm-end]'
-        );
+        const spans = findBodyPmSpans(pagesContainerRef.current);
 
-        for (const span of Array.from(spans)) {
-          const spanEl = span as HTMLElement;
+        for (const spanEl of spans) {
           const pmStart = Number(spanEl.dataset.pmStart);
           const pmEnd = Number(spanEl.dataset.pmEnd);
 
@@ -2148,8 +2147,12 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
           }
 
           // For text runs, use inclusive range
-          if (pmPos >= pmStart && pmPos <= pmEnd && span.firstChild?.nodeType === Node.TEXT_NODE) {
-            const textNode = span.firstChild as Text;
+          if (
+            pmPos >= pmStart &&
+            pmPos <= pmEnd &&
+            spanEl.firstChild?.nodeType === Node.TEXT_NODE
+          ) {
+            const textNode = spanEl.firstChild as Text;
             const charIndex = Math.min(pmPos - pmStart, textNode.length);
 
             // Create a range at the exact character position
@@ -2179,11 +2182,8 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
         }
 
         // Fallback: try to find position in empty paragraphs (they have empty runs).
-        // Same HF-scoping rationale as the span lookup above.
-        const emptyRuns = pagesContainerRef.current.querySelectorAll(
-          '.layout-page-content .layout-empty-run'
-        );
-        for (const emptyRun of Array.from(emptyRuns)) {
+        const emptyRuns = findBodyEmptyRuns(pagesContainerRef.current);
+        for (const emptyRun of emptyRuns) {
           const paragraph = emptyRun.closest('.layout-paragraph') as HTMLElement;
           if (!paragraph) continue;
 
@@ -2311,14 +2311,9 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
             const overlayRect = overlay.getBoundingClientRect();
             const domRects: SelectionRect[] = [];
 
-            // Same HF-scoping rationale as `getCaretFromDom` above; without
-            // it, body selections paint phantom rects on header/footer text.
-            const spans = pagesContainerRef.current.querySelectorAll(
-              '.layout-page-content span[data-pm-start][data-pm-end]'
-            );
+            const spans = findBodyPmSpans(pagesContainerRef.current);
 
-            for (const span of Array.from(spans)) {
-              const spanEl = span as HTMLElement;
+            for (const spanEl of spans) {
               const pmStart = Number(spanEl.dataset.pmStart);
               const pmEnd = Number(spanEl.dataset.pmEnd);
 
@@ -2344,14 +2339,14 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
 
                 // Find the text node — may be a direct child or inside an <a> for hyperlinks
                 let textNode: Text | null = null;
-                if (span.firstChild?.nodeType === Node.TEXT_NODE) {
-                  textNode = span.firstChild as Text;
+                if (spanEl.firstChild?.nodeType === Node.TEXT_NODE) {
+                  textNode = spanEl.firstChild as Text;
                 } else if (
-                  span.firstChild?.nodeType === Node.ELEMENT_NODE &&
-                  (span.firstChild as HTMLElement).tagName === 'A' &&
-                  span.firstChild.firstChild?.nodeType === Node.TEXT_NODE
+                  spanEl.firstChild?.nodeType === Node.ELEMENT_NODE &&
+                  (spanEl.firstChild as HTMLElement).tagName === 'A' &&
+                  spanEl.firstChild.firstChild?.nodeType === Node.TEXT_NODE
                 ) {
-                  textNode = span.firstChild.firstChild as Text;
+                  textNode = spanEl.firstChild.firstChild as Text;
                 }
                 if (!textNode) continue;
                 const ownerDoc = spanEl.ownerDocument;
@@ -2490,9 +2485,9 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
           const { selection: sel } = view.state;
           if (sel instanceof NodeSelection && sel.node.type.name === 'image') {
             const pmPos = sel.from;
-            const imgEl = pagesContainerRef.current?.querySelector(
-              `[data-pm-start="${pmPos}"]`
-            ) as HTMLElement | null;
+            const imgEl = pagesContainerRef.current
+              ? findBodyPmAnchor(pagesContainerRef.current, pmPos)
+              : null;
             if (imgEl) {
               setSelectedImageInfo(buildImageSelectionInfo(imgEl, pmPos));
               return;
@@ -2670,8 +2665,7 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
         scrollAbortRef.current = ac;
         const { signal } = ac;
 
-        const queryPaintedStartEl = (): HTMLElement | null =>
-          pages.querySelector(`[data-pm-start="${pmPos}"]`) as HTMLElement | null;
+        const queryPaintedStartEl = (): HTMLElement | null => findBodyPmAnchor(pages, pmPos);
 
         if (!forParaIdScroll) {
           // Smooth scroll preserves the legacy UX for outline / bookmark /
