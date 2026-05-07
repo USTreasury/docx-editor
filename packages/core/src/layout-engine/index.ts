@@ -854,4 +854,5 @@ export {
   getEffectiveColumns,
 } from './section-breaks';
 export type { SectionState, BreakDecision } from './section-breaks';
+export type { FootnoteContent } from './types';
 export { findPageIndexContainingPmPos } from './findPageIndexContainingPmPos';

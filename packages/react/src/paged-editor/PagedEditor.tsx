@@ -131,8 +131,8 @@ import { getFootnoteText } from '@eigenpal/docx-core/docx';
 import {
   collectFootnoteRefs,
   mapFootnotesToPages,
-  buildFootnoteContentMap,
   calculateFootnoteReservedHeights,
+  buildFootnoteContentMap,
 } from '@eigenpal/docx-core/layout-bridge';
 import type { RenderedDomContext } from '../plugin-api/types';
 import { createRenderedDomContext } from '../plugin-api/RenderedDomContext';
@@ -1312,6 +1312,10 @@ function convertHeaderFooterToContent(
 // =============================================================================
 // FOOTNOTE HELPERS
 // =============================================================================
+//
+// Footnote conversion logic now lives in core (`@eigenpal/docx-core/layout-
+// bridge`). This adapter just hands its `measureBlocks` callback over so the
+// core pipeline can run without dragging in Canvas/font-metric dependencies.
 
 /**
  * Build per-page footnote render items from page footnote mapping.
@@ -1783,11 +1787,20 @@ const PagedEditorComponent = forwardRef<PagedEditorRef, PagedEditorProps>(
             // Map footnote refs to pages
             pageFootnoteMap = mapFootnotesToPages(pass1Layout.pages, footnoteRefs);
 
-            // Build footnote content and measure heights
+            // Build footnote content via the core pipeline. Styles + theme
+            // thread through so footnotes containing themed shading or
+            // styled tables resolve their colors / fonts the same way the
+            // body does. The adapter supplies its `measureBlocks` so core
+            // stays Canvas-free.
             footnoteContentMap = buildFootnoteContentMap(
               document!.package.footnotes!,
               footnoteRefs,
-              contentWidth
+              contentWidth,
+              {
+                styles: styles ?? undefined,
+                theme: _theme ?? null,
+                measureBlocks,
+              }
             );
 
             // Calculate per-page reserved heights

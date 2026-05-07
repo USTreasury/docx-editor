@@ -71,14 +71,19 @@ export {
 } from './selectionRects';
 export type { SelectionRect, CaretPosition } from './selectionRects';
 
-// Footnote layout helpers
+// Footnote layout helpers — full pipeline (page-mapping + content
+// conversion via body pipeline) lives in core so any rendering adapter
+// (React, Vue, etc.) can share the conversion logic and just supply its
+// own platform measureBlocks function.
 export {
   collectFootnoteRefs,
   mapFootnotesToPages,
+  calculateFootnoteReservedHeights,
+  applyFootnotePresentation,
   convertFootnoteToContent,
   buildFootnoteContentMap,
-  calculateFootnoteReservedHeights,
 } from './footnoteLayout';
+export type { MeasureBlocksFn, ConvertFootnoteOptions } from './footnoteLayout';
 
 // Body-scoped PM-position DOM lookups. Centralizes the `.layout-page-content`
 // prefix so call sites can't accidentally match HF runs whose PM positions
