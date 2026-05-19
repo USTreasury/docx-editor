@@ -290,14 +290,24 @@ export function paragraphToRuns(
   const theme = _options.theme;
   const paraDefaults = paragraphRunDefaults(node.attrs as PMParagraphAttrs);
 
+  // Hyperlinks inside TOC paragraphs use the TOCx color, not the Hyperlink
+  // character style's color — see `HyperlinkInfo.noDefaultStyle`.
+  const styleId = (node.attrs as PMParagraphAttrs).styleId;
+  const inTocParagraph = typeof styleId === 'string' && /^TOC\d*$/i.test(styleId);
+
   // Single dispatcher for one inline PM child. Recurses on `sdt` so nested
-  // content controls keep contributing runs at the right pmStart/pmEnd. Used
-  // for both the top-level paragraph iteration and the descent into SDT
-  // children — the SDT branch was previously only handling text/tab/image,
-  // silently dropping fields, nested SDTs, and math.
+  // content controls keep contributing runs at the right pmStart/pmEnd.
   function pushRunsForChild(child: PMNode, childPos: number): void {
     if (child.isText && child.text) {
       const formatting = extractRunFormatting(child.marks, theme);
+      if (inTocParagraph && formatting.hyperlink) {
+        // Strip the resolved color/underline so the painter's fallback
+        // doesn't fire; the PM doc keeps the original marks so copy/paste
+        // out of a TOC carries the Hyperlink styling like Word does.
+        formatting.hyperlink = { ...formatting.hyperlink, noDefaultStyle: true };
+        delete formatting.color;
+        delete formatting.underline;
+      }
       const run: TextRun = {
         kind: 'text',
         text: child.text,

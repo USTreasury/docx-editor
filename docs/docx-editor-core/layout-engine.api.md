@@ -228,6 +228,7 @@ export type HitTestResult = {
 export type HyperlinkInfo = {
     href: string;
     tooltip?: string;
+    noDefaultStyle?: boolean;
 };
 
 // @public
@@ -580,10 +581,7 @@ export type RunFormatting = {
     hidden?: boolean;
     rtl?: boolean;
     textEffect?: 'blinkBackground' | 'lights' | 'antsBlack' | 'antsRed' | 'shimmer' | 'sparkle';
-    hyperlink?: {
-        href: string;
-        tooltip?: string;
-    };
+    hyperlink?: HyperlinkInfo;
     footnoteRefId?: number;
     endnoteRefId?: number;
     commentIds?: number[];

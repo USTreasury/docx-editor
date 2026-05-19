@@ -376,6 +376,10 @@ export function renderParagraphFragment(
       context,
       floatingMargins: { leftMargin: lineLeftOffset, rightMargin: lineRightOffset },
       renderedInlineImageKeys,
+      // Absolute right edge in content-area coords. The fragment starts at
+      // content-area-x=0 with full content-area width; the rightmost x where
+      // inline content can land is `fragment.width - indentRight - lineRightOffset`.
+      lineRightEdgePx: fragment.width - indentRight - lineRightOffset,
     });
 
     // Apply left offset from floating images (lines start after the floating image)
@@ -398,13 +402,21 @@ export function renderParagraphFragment(
     // Indentation is applied per-line for correct text wrapping
     const hasHanging = indent?.hanging && indent.hanging > 0;
     const hasFirstLine = indent?.firstLine && indent.firstLine > 0;
+    // If renderLine promoted this line to flex (right-tab anchor pattern),
+    // text-indent must NOT be applied: it would shift the first inline
+    // content INSIDE EACH flex item (e.g. the page number's anchor),
+    // pulling it left by `hanging`. Right-tab anchored lines re-apply the
+    // hanging offset as margin-left on the first item themselves.
+    const isFlexLine = lineEl.dataset.flexLine === 'true';
 
     if (isFirstLine) {
       // First line handling
       if (indentLeft > 0 && hasHanging) {
         // Hanging indent: first line starts at (indentLeft - hanging)
         lineEl.style.paddingLeft = `${indentLeft}px`;
-        lineEl.style.textIndent = `-${indent!.hanging}px`;
+        if (!isFlexLine) {
+          lineEl.style.textIndent = `-${indent!.hanging}px`;
+        }
       } else if (indentLeft > 0 && hasFirstLine) {
         // First line indent: first line starts at (indentLeft + firstLine)
         lineEl.style.paddingLeft = `${indentLeft}px`;

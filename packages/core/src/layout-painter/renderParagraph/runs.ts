@@ -281,12 +281,23 @@ export function renderTextRun(
       anchor.title = run.hyperlink.tooltip;
     }
     anchor.textContent = run.text;
-    // Style hyperlink — default Word hyperlink color is blue (#0563c1)
-    const hyperlinkColor = run.color || '#0563c1';
-    anchor.style.color = hyperlinkColor;
-    anchor.style.textDecoration = 'underline';
-    // Override span color to match anchor (prevents color mismatch in selection)
-    span.style.color = hyperlinkColor;
+
+    // Inherit from the wrapping span (already styled by applyRunStyles). Fall
+    // back to Word-default blue/underline only when nothing was resolved and
+    // the source didn't opt out via HyperlinkInfo.noDefaultStyle (TOC runs).
+    anchor.style.color = 'inherit';
+    anchor.style.textDecoration = 'inherit';
+
+    if (!run.hyperlink.noDefaultStyle) {
+      if (!run.color) {
+        anchor.style.color = '#0563c1';
+        span.style.color = '#0563c1';
+      }
+      if (!run.underline) {
+        anchor.style.textDecoration = 'underline';
+      }
+    }
+
     span.appendChild(anchor);
   } else {
     // Set text content
@@ -295,6 +306,14 @@ export function renderTextRun(
 
   return span;
 }
+
+/**
+ * Number of leader characters to fill the tab's inner span. The inner span
+ * uses `overflow: hidden` so excess characters are clipped invisibly; we just
+ * need enough to span the widest realistic tab stop at the thinnest leader
+ * (a dot at small font sizes). 1000 covers wide-landscape pages with ~2px dots.
+ */
+const LEADER_FILL_COUNT = 1000;
 
 /**
  * Render a tab run with calculated width
@@ -310,25 +329,33 @@ export function renderTabRun(
 
   span.style.display = 'inline-block';
   span.style.width = `${width}px`;
-  span.style.overflow = 'hidden';
 
   applyPmPositions(span, run.pmStart, run.pmEnd);
 
-  // Render leader character if specified
-  if (leader && leader !== 'none') {
-    const leaderChar = getLeaderChar(leader);
-    if (leaderChar) {
-      // Fill with leader characters
-      span.style.backgroundImage = `url("data:image/svg+xml,${encodeURIComponent(
-        `<svg xmlns='http://www.w3.org/2000/svg' width='4' height='16'><text x='0' y='12' font-size='12' fill='%23000'>${leaderChar}</text></svg>`
-      )}")`;
-      span.style.backgroundRepeat = 'repeat-x';
-      span.style.backgroundPosition = 'bottom';
-    }
-  }
+  const leaderChar = leader && leader !== 'none' ? getLeaderChar(leader) : null;
 
-  // Tab character for accessibility (but invisible)
-  span.textContent = ' '; // Non-breaking space for layout
+  if (leaderChar) {
+    // Outer span holds a zero-width space so its baseline aligns with the
+    // surrounding text. Inner absolutely-positioned span carries the dots
+    // and clips horizontally; keeping `overflow: hidden` off the outer
+    // avoids the inline-block baseline-at-margin-edge problem.
+    span.style.position = 'relative';
+    span.textContent = '​';
+
+    const inner = doc.createElement('span');
+    inner.style.position = 'absolute';
+    inner.style.left = '0';
+    inner.style.right = '0';
+    inner.style.top = '0';
+    inner.style.bottom = '0';
+    inner.style.overflow = 'hidden';
+    inner.style.whiteSpace = 'nowrap';
+    inner.textContent = leaderChar.repeat(LEADER_FILL_COUNT);
+    span.appendChild(inner);
+  } else {
+    // No leader: a single nbsp carries the line-height for layout.
+    span.textContent = ' ';
+  }
 
   return span;
 }

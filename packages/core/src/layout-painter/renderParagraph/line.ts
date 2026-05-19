@@ -104,6 +104,13 @@ interface RenderLineOptions {
   floatingMargins?: { leftMargin: number; rightMargin: number };
   /** Track inline image runs already rendered in this paragraph fragment to prevent duplicates */
   renderedInlineImageKeys?: Set<string>;
+  /**
+   * Rightmost x where inline content may render, in content-area coords. Used
+   * by the right-tab anchor; passed in directly (rather than recomposed from
+   * `leftIndentPx + availableWidth`) because `availableWidth` excludes the
+   * hung-out region for some inputs and would drift.
+   */
+  lineRightEdgePx?: number;
 }
 
 /**
@@ -161,23 +168,87 @@ function getTextAfterTab(runs: Run[], tabRunIndex: number, context?: RenderConte
 }
 
 /**
+ * Sub-pixel tolerance when comparing canvas-measured widths against the DOM's
+ * actual right edge. Without this, accumulated rounding from `measureText`
+ * vs. browser layout can leave a right-anchored tab one pixel short, and the
+ * flex anchor fails to trigger when it should.
+ */
+const RIGHT_EDGE_EPSILON_PX = 0.5;
+
+/**
+ * Sum the pixel widths of runs that follow a tab, up to the next tab or line
+ * break. Measures per-run so the tab clamp reserves exact space when trailing
+ * runs use a different font/size from the default (e.g. TOC page numbers).
+ */
+function measureFollowingContentWidth(
+  runs: Run[],
+  tabRunIndex: number,
+  measureText: (
+    text: string,
+    fontSize?: number,
+    fontFamily?: string,
+    bold?: boolean,
+    italic?: boolean
+  ) => number,
+  context?: RenderContext
+): number {
+  let width = 0;
+  for (let i = tabRunIndex + 1; i < runs.length; i++) {
+    const run = runs[i];
+    if (isTabRun(run) || isLineBreakRun(run)) break;
+    if (isTextRun(run)) {
+      width += measureText(run.text || '', run.fontSize, run.fontFamily, run.bold, run.italic);
+    } else if (isFieldRun(run)) {
+      let fieldText: string;
+      if (run.fieldType === 'PAGE' && context) {
+        fieldText = String(context.pageNumber);
+      } else if (run.fieldType === 'NUMPAGES' && context) {
+        fieldText = String(context.totalPages);
+      } else {
+        fieldText = run.fallback ?? '';
+      }
+      width += measureText(fieldText, run.fontSize, run.fontFamily, run.bold, run.italic);
+    } else if (isImageRun(run) && !isFloatingImageRun(run)) {
+      // Floating images render at the page level — they contribute 0 inline
+      // width, so don't count them in the right-edge clamp budget.
+      width += run.width || 0;
+    }
+  }
+  return width;
+}
+
+/**
  * Create a text measurement function using a temporary canvas
  * Uses the same font fallback chain as measureContainer.ts
  */
 function createTextMeasurer(
   doc: Document
-): (text: string, fontSize?: number, fontFamily?: string) => number {
+): (
+  text: string,
+  fontSize?: number,
+  fontFamily?: string,
+  bold?: boolean,
+  italic?: boolean
+) => number {
   const canvas = doc.createElement('canvas');
   const ctx = canvas.getContext('2d');
 
-  return (text: string, fontSize = 11, fontFamily = 'Calibri') => {
+  return (text: string, fontSize = 11, fontFamily = 'Calibri', bold = false, italic = false) => {
     if (!ctx) return text.length * 7; // Fallback estimate
-    // Use font resolver for category-appropriate fallback stacks,
-    // matching measureContainer.ts
+    // Font resolver for category-appropriate fallback stacks, matching
+    // measureContainer.ts. Include weight + style: `applyRunStyles` sets
+    // `font-weight: bold` / `font-style: italic` on the painted span, but
+    // if the canvas font string omits them the browser measures the
+    // *regular* face. For TOC entries (whose runs carry inline <w:b/>)
+    // that under-counts the painted width by a few px per run and the
+    // page-number drifts off the right margin.
     const cssFallback = resolveFontFamily(fontFamily).cssFallback;
-    // Convert pt to px for canvas (1pt = 96/72 px)
     const fontSizePx = (fontSize * 96) / 72;
-    ctx.font = `${fontSizePx}px ${cssFallback}`;
+    const parts: string[] = [];
+    if (italic) parts.push('italic');
+    if (bold) parts.push('bold');
+    parts.push(`${fontSizePx}px`, cssFallback);
+    ctx.font = parts.join(' ');
     return ctx.measureText(text).width;
   };
 }
@@ -236,6 +307,7 @@ export function renderLine(
         : effectiveAlign === 'right'
           ? 'flex-end'
           : 'flex-start';
+    lineEl.dataset.flexLine = 'true';
   }
 
   // Handle empty lines
@@ -330,12 +402,101 @@ export function renderLine(
       // Calculate tab width based on current position
       const tabResult = calculateTabWidth(currentX, tabContext, followingText, measureText);
 
-      // Render tab with calculated width and leader
-      const tabEl = renderTabRun(run, doc, tabResult.width, tabResult.leader);
-      lineEl.appendChild(tabEl);
+      // Right-tab anchor (TOC pattern): when an end-aligned tab's stop is at
+      // the line's right edge, let flex layout pin the trailing content there
+      // (tab gets flex: 1) — sidesteps canvas-vs-DOM measurement drift.
+      const lineRightEdgeX = options?.lineRightEdgePx;
+      const followingWidthForCheck =
+        lineRightEdgeX !== undefined
+          ? measureFollowingContentWidth(runsForLine, i, measureText, options?.context)
+          : 0;
+      // Gated to the last tab on the line — a trailing tab after a flex-anchored
+      // item would push the anchor left.
+      let hasFollowingTab = false;
+      for (let j = i + 1; j < runsForLine.length; j++) {
+        if (isLineBreakRun(runsForLine[j])) break;
+        if (isTabRun(runsForLine[j])) {
+          hasFollowingTab = true;
+          break;
+        }
+      }
+      const useRightAnchor =
+        lineRightEdgeX !== undefined &&
+        tabResult.alignment === 'end' &&
+        !hasFollowingTab &&
+        currentX + tabResult.width + followingWidthForCheck >=
+          lineRightEdgeX - RIGHT_EDGE_EPSILON_PX;
 
-      // Update X position
-      currentX += tabResult.width;
+      if (useRightAnchor) {
+        // text-indent applies per flex item (not to the group), so a hanging
+        // indent would pull every text-containing item left, including the
+        // page number. Strip it here and re-apply as margin-left on the first
+        // child. white-space: nowrap stops trailing items wrapping mid-line.
+        lineEl.style.display = 'flex';
+        lineEl.style.alignItems = 'baseline';
+        lineEl.style.whiteSpace = 'nowrap';
+        lineEl.style.textIndent = '0';
+        lineEl.dataset.flexLine = 'true';
+        if (
+          options?.isFirstLine &&
+          options.firstLineIndentPx &&
+          options.firstLineIndentPx < 0 &&
+          lineEl.firstElementChild instanceof HTMLElement
+        ) {
+          // Re-apply the hanging indent (text-indent doesn't work for flex
+          // items). Negative margin-left on the first flex item pulls it back
+          // into the padding area, matching the original text-indent behaviour.
+          lineEl.firstElementChild.style.marginLeft = `${options.firstLineIndentPx}px`;
+        }
+
+        // The tab — flex-grow to fill remaining line space after the trailing
+        // content takes its natural width. The leader inside is already
+        // absolutely positioned to fill the outer's box.
+        const tabEl = renderTabRun(run, doc, 0, tabResult.leader);
+        tabEl.style.flex = '1 1 0';
+        tabEl.style.minWidth = '0';
+        tabEl.style.width = 'auto';
+        lineEl.appendChild(tabEl);
+
+        // Render the remaining runs into the line at their natural width.
+        // Flex layout puts them flush against the line's right edge.
+        for (let j = i + 1; j < runsForLine.length; j++) {
+          const next = runsForLine[j];
+          if (isTabRun(next) || isLineBreakRun(next)) break;
+          if (isTextRun(next)) {
+            lineEl.appendChild(renderTextRun(next, doc, options?.context?.resolvedCommentIds));
+          } else if (isFieldRun(next) && options?.context) {
+            lineEl.appendChild(renderFieldRun(next, doc, options.context));
+          } else if (isImageRun(next)) {
+            // Floating images render at the page level (or in dedicated cell
+            // layers) — skip here to avoid double-rendering, matching the
+            // main loop's behaviour.
+            if (isFloatingImageRun(next)) continue;
+            const imageKey = getInlineImageRunKey(next);
+            if (!options?.renderedInlineImageKeys?.has(imageKey)) {
+              options?.renderedInlineImageKeys?.add(imageKey);
+              lineEl.appendChild(renderImageRun(next, doc));
+            }
+          } else {
+            lineEl.appendChild(renderRun(next, doc, options?.context));
+          }
+        }
+
+        break;
+      }
+
+      // Fallback path: not a right-anchored tab. Apply the existing clamp
+      // so a tab that overshoots the line edge doesn't bleed past it.
+      let tabWidth = tabResult.width;
+      if (lineRightEdgeX !== undefined) {
+        if (currentX + tabWidth + followingWidthForCheck > lineRightEdgeX) {
+          tabWidth = Math.max(1, lineRightEdgeX - currentX - followingWidthForCheck);
+        }
+      }
+
+      const tabEl = renderTabRun(run, doc, tabWidth, tabResult.leader);
+      lineEl.appendChild(tabEl);
+      currentX += tabWidth;
     } else if (isTextRun(run)) {
       const runEl = renderTextRun(run, doc, options?.context?.resolvedCommentIds);
 
@@ -359,7 +520,7 @@ export function renderLine(
       // Measure text width for accurate tab position tracking
       const fontSize = run.fontSize || 11;
       const fontFamily = run.fontFamily || 'Calibri';
-      currentX += measureText(run.text, fontSize, fontFamily);
+      currentX += measureText(run.text, fontSize, fontFamily, run.bold, run.italic);
     } else if (isImageRun(run)) {
       // Skip floating images - they're rendered separately at page level.
       // Exception: inside table cells, floating images must render in-flow
@@ -393,7 +554,7 @@ export function renderLine(
       else if (run.fieldType === 'NUMPAGES') fieldText = String(options.context.totalPages);
       const fontSize = run.fontSize || 11;
       const fontFamily = run.fontFamily || 'Calibri';
-      currentX += measureText(fieldText, fontSize, fontFamily);
+      currentX += measureText(fieldText, fontSize, fontFamily, run.bold, run.italic);
     } else {
       // Fallback for unknown run types
       const runEl = renderRun(run, doc, options?.context);
